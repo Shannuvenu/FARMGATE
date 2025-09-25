@@ -1,0 +1,25 @@
+# Ignore virtual environments
+.venv/
+env/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore database
+*.db
+
+# Ignore reports
+*.pdf
+
+# Ignore local CSV test files
+*.csv
+!rules_*.csv
+!treatments_sample.csv
+!lab_results_sample.csv

@@ -1,0 +1,4 @@
+animal_tag,drug,dose_mg_per_kg,route,date_administered,batch_code,indication,duration_days,prescribed_by
+BUF-12,Oxytetracycline,10,IM,2025-09-20,OXY-123,mastitis,5,VET-001
+BUF-12,Oxytetracycline,10,IM,2025-09-23,OXY-456,respiratory,3,VET-001
+COW-07,Enrofloxacin,5,IV,2025-09-21,ENR-456,enteritis,5,VET-002

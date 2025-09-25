@@ -1,0 +1,13 @@
+species,drug,drug_class,is_critical,matrix,withdrawal_days,mrl_mg_per_kg
+cow,Oxytetracycline,tetracycline,N,milk,6,0.1
+cow,Oxytetracycline,tetracycline,N,meat,14,0.2
+buffalo,Oxytetracycline,tetracycline,N,milk,6,0.1
+buffalo,Oxytetracycline,tetracycline,N,meat,14,0.2
+cow,Enrofloxacin,fluoroquinolone,Y,milk,5,0.05
+cow,Enrofloxacin,fluoroquinolone,Y,meat,10,0.1
+buffalo,Enrofloxacin,fluoroquinolone,Y,milk,5,0.05
+buffalo,Enrofloxacin,fluoroquinolone,Y,meat,12,0.1
+cow,Amoxicillin,penicillin,N,milk,3,0.04
+cow,Amoxicillin,penicillin,N,meat,7,0.06
+buffalo,Amoxicillin,penicillin,N,milk,3,0.04
+buffalo,Amoxicillin,penicillin,N,meat,7,0.06
