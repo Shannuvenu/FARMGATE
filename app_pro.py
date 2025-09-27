@@ -1,32 +1,31 @@
-
-# app_pro_fixed.py — Offline MRL/AMU Compliance Platform (WOW version, fixed)
-# - Master data (Animals; Drugs)
+# app_pro.py — Farm-Gate MRL & AMU Compliance — Pro (Offline)
+# Built by HEXAMINDS 📈
+#
+# Features:
+# - Master data (Animals with avg_weight_kg; Drugs with class & critical flag)
 # - Rule-pack toggle (FSSAI/CODEX/EU) + CSV importer
-# - Treatments & Labs
-# - Safe-to-Sell (withdrawal) & MRL verdict
-# - Zero-Residue Badge, AMU & stewardship metrics
-# - Authorities view + Monthly PDF report
-# - Roles (Farmer/Vet/Lab/Buyer/Authority) — local view
-# - Pure local: SQLite + Streamlit; no external APIs
-
-import os
-from io import BytesIO
-from datetime import date, datetime, timedelta
-
-import sqlite3
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from PIL import Image
-import qrcode
+# - Treatments (indication, duration_days, prescribed_by) & Labs
+# - Safe-to-Sell (withdrawal) & MRL verdict (latest lab)
+# - Zero-Residue Badge tracking (streak days)
+# - AMU metrics (mg/kg biomass), simple DDDvet proxy, antibiotic-free days
+# - Authorities Dashboard (AMU by class, open withdrawals, top BLOCK reasons)
+# - Monthly Report PDF (charts + KPIs)
+# - Role views (Farmer/Vet/Lab/Buyer/Authority) - local toggle
+# - Certificate PDF with QR + branding
+# - Telugu/English nudges
+# - Pure local: SQLite + Streamlit, no external APIs
 
 import streamlit as st
+import sqlite3
+import pandas as pd
+import numpy as np
+from datetime import date, datetime, timedelta
+from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
-
-# -------------------- Streamlit page config FIRST --------------------
-st.set_page_config(page_title="Farm-Gate MRL & AMU Compliance — Pro", layout="wide")
+import qrcode
+import matplotlib.pyplot as plt
 
 DB_PATH = "mrl_amu_pro.db"
 
@@ -121,19 +120,15 @@ def current_profile():
     return get_setting("rule_profile","FSSAI")
 
 def load_rulepack_csv(path_or_buffer, profile_name):
-    """
-    Import CSV with columns:
-    species,drug,drug_class,is_critical,matrix,withdrawal_days,mrl_mg_per_kg
-    """
     try:
         r = pd.read_csv(path_or_buffer)
+        # expected cols: species,drug,drug_class,is_critical,matrix,withdrawal_days,mrl_mg_per_kg
         required = {"species","drug","drug_class","is_critical","matrix","withdrawal_days","mrl_mg_per_kg"}
         missing = required - set(map(str.lower, r.columns))
-        # allow case-insensitive columns
-        colmap = {c:c.lower() for c in r.columns}
-        r.rename(columns=colmap, inplace=True)
         if missing:
-            return False, f"CSV missing columns: {', '.join(sorted(missing))}"
+            return False, f"Missing columns in CSV: {', '.join(sorted(missing))}"
+        # normalize lower-case columns
+        r.columns = [c.lower() for c in r.columns]
         r["profile"]=profile_name.upper()
         write("DELETE FROM rules WHERE profile=?", (profile_name.upper(),))
         cols = ["profile","species","drug","drug_class","is_critical","matrix","withdrawal_days","mrl_mg_per_kg"]
@@ -141,7 +136,7 @@ def load_rulepack_csv(path_or_buffer, profile_name):
         write_many(f"INSERT INTO rules({','.join(cols)}) VALUES (?,?,?,?,?,?,?,?)", rows)
         return True, f"Imported {len(rows)} rules for {profile_name}."
     except Exception as e:
-        return False, f"Import failed: {e}"
+        return False, f"Rule-pack import failed: {e}"
 
 def rule_for(species, drug, matrix, profile=None):
     profile = profile or current_profile()
@@ -155,8 +150,7 @@ def calc_safe_date(animal_id:int, matrix:str, profile=None):
     a = df("SELECT * FROM animals WHERE id=?", (animal_id,))
     if a.empty: return None, "animal_missing", []
     species = a.iloc[0]["species"]
-    blocks = []
-    details = []
+    blocks, details = [], []
     for _,row in t.iterrows():
         r = rule_for(species, row["drug"], matrix, profile)
         if r is None:
@@ -245,21 +239,31 @@ def update_zero_residue_badge(window_days=90):
             streak = 0
         write("UPDATE animals SET zero_residue_streak_days=? WHERE id=?", (streak, int(a["id"])))
 
-# -------------------- App Boot --------------------
+
+# -------------------- UI --------------------
+st.set_page_config(page_title="Farm-Gate MRL & AMU Compliance — Pro (Offline) — Built by HEXAMINDS 📈",
+                   layout="wide", page_icon="🧪")
 init_db()
 
-# Role selection (local)
+# Header with branding
+st.markdown(
+    "<div style='display:flex;justify-content:space-between;align-items:center;'>"
+    "<h2 style='margin:0'>🐮 Farm-Gate MRL & AMU Compliance — Pro (Offline)</h2>"
+    "<div style='font-weight:600;color:#4b9e3a'>Built by HEXAMINDS 📈</div>"
+    "</div>",
+    unsafe_allow_html=True
+)
+st.caption("Stop unsafe milk/meat at source • Stewardship • Trend analysis • Reports")
+
+# Sidebar role & profile
 role = st.sidebar.selectbox("Role / పాత్ర", ["Operator","Farmer","Vet","Lab","Buyer","Authority"], index=0)
 st.sidebar.caption("Local role view (offline)")
+st.sidebar.markdown("**Built by HEXAMINDS 📈**")
 
-# Rule profile toggle
 profile = st.sidebar.selectbox("Rule Pack", ["FSSAI","CODEX","EU"],
                                index=["FSSAI","CODEX","EU"].index(get_setting("rule_profile","FSSAI")))
 if profile != current_profile():
     set_setting("rule_profile", profile)
-
-st.title("🐮 Farm-Gate MRL & AMU Compliance — Pro (Offline)")
-st.caption("Stop unsafe milk/meat at source • Stewardship • Trend analysis • Reports")
 
 with st.expander("📝 Nudges (తెలుగులో/English)"):
     st.markdown("""
@@ -275,11 +279,11 @@ tabs = st.tabs(["📋 Master Data","💉 Treatments","🧪 Lab Results","✅ Com
 with tabs[0]:
     st.subheader("Animals")
     with st.form("animal_form"):
-        colA = st.columns(5)
-        tag = colA[0].text_input("Tag ID*", "BUF-12")
-        species = colA[1].selectbox("Species*", ["cow","buffalo","poultry"], index=1)
-        herd = colA[2].text_input("Herd/Farm", "GreenFarm")
-        wt = colA[3].number_input("Avg Weight (kg)", min_value=50.0, value=450.0, step=5.0)
+        c = st.columns(5)
+        tag = c[0].text_input("Tag ID*", "BUF-12")
+        species = c[1].selectbox("Species*", ["cow","buffalo","poultry"], index=1)
+        herd = c[2].text_input("Herd/Farm", "GreenFarm")
+        wt = c[3].number_input("Avg Weight (kg)", min_value=50.0, value=450.0, step=5.0)
         if st.form_submit_button("Add/Update Animal"):
             exist = df("SELECT * FROM animals WHERE tag_id=?", (tag,))
             if exist.empty:
@@ -293,10 +297,10 @@ with tabs[0]:
     st.markdown("---")
     st.subheader("Drugs")
     with st.form("drug_form"):
-        colD = st.columns(4)
-        dname = colD[0].text_input("Drug name*", "Oxytetracycline")
-        dclass = colD[1].selectbox("Class", ["tetracycline","fluoroquinolone","penicillin","other"])
-        crit = colD[2].selectbox("WHO HP-CIA (critical)?", ["N","Y"])
+        c = st.columns(4)
+        dname = c[0].text_input("Drug name*", "Oxytetracycline")
+        dclass = c[1].selectbox("Class", ["tetracycline","fluoroquinolone","penicillin","other"])
+        crit = c[2].selectbox("WHO HP-CIA (critical)?", ["N","Y"])
         if st.form_submit_button("Add Drug"):
             try:
                 write("INSERT INTO drugs(name,drug_class,is_critical) VALUES(?,?,?)",(dname,dclass,crit))
@@ -320,18 +324,18 @@ with tabs[1]:
         st.warning("Add at least one animal and one drug first.")
     else:
         with st.form("treat_form"):
-            colT = st.columns(8)
-            a_tag = colT[0].selectbox("Animal (Tag)", animals_df["tag_id"].tolist())
+            c = st.columns(8)
+            a_tag = c[0].selectbox("Animal (Tag)", animals_df["tag_id"].tolist())
             aid = int(animals_df[animals_df["tag_id"]==a_tag].iloc[0]["id"])
-            dname = colT[1].selectbox("Drug", drugs_df["name"].tolist())
-            dose = colT[2].number_input("Dose (mg/kg)", min_value=0.0, value=10.0, step=0.5)
-            route = colT[3].selectbox("Route", ["IM","IV","SC","PO"])
-            d_admin = colT[4].date_input("Date", value=date.today())
-            batch = colT[5].text_input("Batch", "BATCH-001")
-            indic = colT[6].text_input("Indication", "mastitis")
-            dur = colT[7].number_input("Duration (days)", min_value=1, value=5, step=1)
-            colT2 = st.columns(2)
-            presc = colT2[0].text_input("Prescribed by (Vet ID)", "VET-001")
+            dname = c[1].selectbox("Drug", drugs_df["name"].tolist())
+            dose = c[2].number_input("Dose (mg/kg)", min_value=0.0, value=10.0, step=0.5)
+            route = c[3].selectbox("Route", ["IM","IV","SC","PO"])
+            d_admin = c[4].date_input("Date", value=date.today())
+            batch = c[5].text_input("Batch", "BATCH-001")
+            indic = c[6].text_input("Indication", "mastitis")
+            dur = c[7].number_input("Duration (days)", min_value=1, value=5, step=1)
+            c2 = st.columns(2)
+            presc = c2[0].text_input("Prescribed by (Vet ID)", "VET-001")
             if st.form_submit_button("Save Treatment"):
                 write("""INSERT INTO treatments(animal_id,drug,dose_mg_per_kg,route,date_administered,batch_code,
                         indication,duration_days,prescribed_by,created_at)
@@ -354,13 +358,13 @@ with tabs[2]:
         st.warning("Add animals & drugs first.")
     else:
         with st.form("lab_form"):
-            colL = st.columns(6)
-            a_tag = colL[0].selectbox("Animal (Tag)", animals_df["tag_id"].tolist())
+            c = st.columns(6)
+            a_tag = c[0].selectbox("Animal (Tag)", animals_df["tag_id"].tolist())
             aid = int(animals_df[animals_df["tag_id"]==a_tag].iloc[0]["id"])
-            dname = colL[1].selectbox("Drug", drugs_df["name"].tolist())
-            matrix = colL[2].selectbox("Matrix", ["milk","meat"])
-            val = colL[3].number_input("Residue (mg/kg)", min_value=0.0, value=0.08, step=0.01)
-            d_sample = colL[4].date_input("Sample Date", value=date.today())
+            dname = c[1].selectbox("Drug", drugs_df["name"].tolist())
+            matrix = c[2].selectbox("Matrix", ["milk","meat"])
+            val = c[3].number_input("Residue (mg/kg)", min_value=0.0, value=0.08, step=0.01)
+            d_sample = c[4].date_input("Sample Date", value=date.today())
             if st.form_submit_button("Save Lab Result"):
                 write("""INSERT INTO labs(animal_id,drug,matrix,value_mg_per_kg,sample_date)
                          VALUES (?,?,?,?,?)""",(aid,dname,matrix,float(val),d_sample.isoformat()))
@@ -378,8 +382,8 @@ with tabs[3]:
     if animals_df.empty:
         st.info("Add animal(s) first.")
     else:
-        colC = st.columns(2)
-        with colC[0]:
+        c = st.columns(2)
+        with c[0]:
             st.markdown("**Withdrawal Check**")
             a_tag = st.selectbox("Animal", animals_df["tag_id"].tolist(), key="c_an")
             aid = int(animals_df[animals_df["tag_id"]==a_tag].iloc[0]["id"])
@@ -400,7 +404,7 @@ with tabs[3]:
                         dd = pd.DataFrame(detail, columns=["drug","date_admin","until/notes"])
                         st.dataframe(dd)
 
-        with colC[1]:
+        with c[1]:
             st.markdown("**MRL Verdict (Latest Lab)**")
             if drugs_df.empty: st.info("Add drugs.")
             else:
@@ -433,7 +437,8 @@ with tabs[3]:
                 "profile": current_profile(),
                 "safe_milk": (safe_milk.isoformat() if safe_milk else None),
                 "safe_meat": (safe_meat.isoformat() if safe_meat else None),
-                "ts": datetime.utcnow().isoformat()
+                "ts": datetime.utcnow().isoformat(),
+                "built_by": "HEXAMINDS"
             }
             qr = qrcode.make(str(payload))
             qrbuf = BytesIO(); qr.save(qrbuf, format="PNG"); qrbuf.seek(0)
@@ -447,19 +452,20 @@ with tabs[3]:
             ccv.drawString(72, 765, f"Rule Profile: {current_profile()}")
             if safe_milk: ccv.drawString(72, 750, f"Safe-to-sell (Milk): {safe_milk}")
             if safe_meat: ccv.drawString(72, 735, f"Safe-to-sell (Meat): {safe_meat}")
-            ccv.drawImage(ImageReader(BytesIO(qrbuf.getvalue())), 72, 620, width=120, height=120)
+            ccv.drawString(72, 720, "Built by HEXAMINDS 📈")
+            ccv.drawImage(ImageReader(BytesIO(qrbuf.getvalue())), 72, 600, width=120, height=120)
             ccv.showPage(); ccv.save(); pdf.seek(0)
             st.download_button("⬇️ Download PDF", data=pdf, file_name=f"certificate_{arow['tag_id']}.pdf", mime="application/pdf")
 
 # -------------------- Analytics --------------------
 with tabs[4]:
     st.subheader("Trends & Stewardship Metrics")
-    colM = st.columns(3)
+    col = st.columns(3)
     end = date.today()
     start = end - timedelta(days=30)
-    start = colM[0].date_input("Start", value=start)
-    end = colM[1].date_input("End", value=end)
-    if colM[2].button("Refresh Metrics"):
+    start = col[0].date_input("Start", value=start)
+    end = col[1].date_input("End", value=end)
+    if col[2].button("Refresh Metrics"):
         pass
 
     amu = amu_mg_per_kg_biomass(start, end)
@@ -469,19 +475,19 @@ with tabs[4]:
     mcol[0].metric("AMU (mg/kg biomass)", f"{amu:.3f}")
     mcol[1].metric("DDDvet proxy / 1000 animal-days", f"{ddd:.2f}")
 
-    labs_df = df("""SELECT l.*, a.species FROM labs l JOIN animals a ON a.id=l.animal_id""")
-    if not labs_df.empty:
-        rules_df = df("SELECT * FROM rules WHERE profile=?", (current_profile(),))
-        j = labs_df.merge(rules_df, on=["species","drug","matrix"], how="left", suffixes=("","_r"))
+    labs_all = df("""SELECT l.*, a.species FROM labs l JOIN animals a ON a.id=l.animal_id""")
+    if not labs_all.empty:
+        rules = df("SELECT * FROM rules WHERE profile=?", (current_profile(),))
+        j = labs_all.merge(rules, left_on=["species","drug","matrix"], right_on=["species","drug","matrix"], how="left", suffixes=("","_r"))
         j["pass"] = j["value_mg_per_kg"] <= j["mrl_mg_per_kg"]
         mrate = (j["pass"].sum()/len(j))*100 if len(j)>0 else 0.0
     else:
         mrate = 0.0
     mcol[2].metric("MRL Pass Rate (%)", f"{mrate:.1f}")
 
-    animals_df = df("SELECT * FROM animals")
-    afds = [antibiotic_free_days(int(a["id"]), start, end) for _,a in animals_df.iterrows()] if not animals_df.empty else []
-    avg_afd = float(np.mean(afds)) if afds else 0.0
+    animals_all = df("SELECT * FROM animals")
+    afds = [antibiotic_free_days(int(a["id"]), start, end) for _,a in animals_all.iterrows()] if not animals_all.empty else []
+    avg_afd = np.mean(afds) if afds else 0.0
     mcol[3].metric("Avg Antibiotic-Free Days", f"{avg_afd:.1f}")
 
     st.markdown("#### Treatments by Drug Class")
@@ -498,7 +504,7 @@ with tabs[4]:
 
     st.markdown("#### Violations & Reasons (last 30 days)")
     reasons = []
-    for _,a in animals_df.iterrows():
+    for _,a in animals_all.iterrows():
         for mx in ["milk","meat"]:
             safe,_r,_d = calc_safe_date(int(a["id"]), mx)
             if safe and date.today()<safe:
@@ -522,16 +528,16 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Authority View — Real-time AMU & Compliance")
     update_zero_residue_badge()
-    colA = st.columns(3)
+    col = st.columns(3)
     n_open = 0
-    an_df = df("SELECT * FROM animals")
-    for _,a in an_df.iterrows():
+    an = df("SELECT * FROM animals")
+    for _,a in an.iterrows():
         for mx in ["milk","meat"]:
             sd,_r,_d = calc_safe_date(int(a["id"]), mx)
             if sd and date.today()<sd: n_open+=1
-    colA[0].metric("Open Withdrawal Cases", n_open)
-    colA[1].metric("Animals", len(an_df))
-    colA[2].metric("Zero-Residue Badge (streak≥30d)", int((an_df["zero_residue_streak_days"]>=30).sum() if not an_df.empty else 0))
+    col[0].metric("Open Withdrawal Cases", n_open)
+    col[1].metric("Animals", len(an))
+    col[2].metric("Zero-Residue Badge (streak≥30d)", int((an["zero_residue_streak_days"]>=30).sum() if not an.empty else 0))
 
     st.markdown("#### AMU by Drug Class (last 30d)")
     t = df("""SELECT t.*, d.drug_class FROM treatments t LEFT JOIN drugs d ON d.name=t.drug""")
@@ -548,7 +554,7 @@ with tabs[5]:
 
     st.markdown("#### Top BLOCK Reasons (snapshot)")
     reasons=[]
-    for _,a in an_df.iterrows():
+    for _,a in an.iterrows():
         for mx in ["milk","meat"]:
             sd,_r,_d = calc_safe_date(int(a["id"]), mx)
             if sd and date.today()<sd:
@@ -575,11 +581,11 @@ with tabs[6]:
     start = (end.replace(day=1) - timedelta(days=1)).replace(day=1)  # previous month start
     k1 = f"AMU mg/kg: {amu_mg_per_kg_biomass(start,end):.3f}"
     k2 = f"DDDvet/1000: {dddvet_proxy(start,end):.2f}"
-    labs_df = df("""SELECT l.*, a.species FROM labs l JOIN animals a ON a.id=l.animal_id
+    labs = df("""SELECT l.*, a.species FROM labs l JOIN animals a ON a.id=l.animal_id
                  WHERE date(sample_date)>=? AND date(sample_date)<=?""",(start.isoformat(), end.isoformat()))
-    if not labs_df.empty:
-        rules_df = df("SELECT * FROM rules WHERE profile=?", (current_profile(),))
-        j = labs_df.merge(rules_df, on=["species","drug","matrix"], how="left")
+    if not labs.empty:
+        rules = df("SELECT * FROM rules WHERE profile=?", (current_profile(),))
+        j = labs.merge(rules, left_on=["species","drug","matrix"], right_on=["species","drug","matrix"], how="left")
         j["pass"] = j["value_mg_per_kg"] <= j["mrl_mg_per_kg"]
         k3 = f"MRL Pass Rate: {((j['pass'].sum()/len(j))*100):.1f}%"
     else:
@@ -599,21 +605,23 @@ with tabs[6]:
         ccv.drawString(92, 695, "• Withdrawal pending cases reduced via gate checks")
         ccv.drawString(92, 680, "• MRL violations addressed with re-sampling and nudges")
         ccv.drawString(92, 665, "• Stewardship improving — antibiotic-free days trending up")
+        ccv.drawString(72, 640, "Built by HEXAMINDS 📈")
         ccv.showPage(); ccv.save(); pdf.seek(0)
         st.download_button("⬇️ Download Monthly Report PDF", data=pdf, file_name="monthly_report.pdf", mime="application/pdf")
 
 # -------------------- Import/Export --------------------
 with tabs[7]:
     st.subheader("Rule-Pack Import")
-    st.write("Prepare & upload your FSSAI/Codex/EU CSV below.")
-    up = st.file_uploader("Upload rule-pack CSV", type=["csv"])
+    st.write("Prepare & upload your FSSAI/Codex/EU CSV below. Expected columns:")
+    st.code("species,drug,drug_class,is_critical,matrix,withdrawal_days,mrl_mg_per_kg", language="text")
+    up = st.file_uploader("Upload rule-pack CSV", type=["csv"], key="rule_up")
     prof = st.selectbox("Apply to profile", ["FSSAI","CODEX","EU"],
-                        index=["FSSAI","CODEX","EU"].index(current_profile()))
+                        index=["FSSAI","CODEX","EU"].index(current_profile()), key="rule_prof")
     if st.button("Import Rule-Pack"):
         if up is None:
             st.warning("Please choose a CSV file.")
         else:
-            ok, msg = load_rulepack_csv(up, prof)
+            ok,msg = load_rulepack_csv(up, prof)
             if ok:
                 st.success(msg)
             else:
@@ -621,52 +629,65 @@ with tabs[7]:
 
     st.markdown("---")
     st.subheader("Bulk Import — Treatments & Labs")
-    st.caption("Upload CSVs in the sample formats (see README or use your own).")
 
+    st.caption("Treatment CSV columns: animal_tag,drug,dose_mg_per_kg,route,date_administered,batch_code,indication,duration_days,prescribed_by")
     t_up = st.file_uploader("Upload treatments CSV", type=["csv"], key="t_up")
     if st.button("Import Treatments"):
         if t_up is None:
-            st.warning("Please choose a treatments CSV.")
+            st.warning("Please upload a treatments CSV.")
         else:
             try:
                 tdf = pd.read_csv(t_up)
-                animals_small = df("SELECT * FROM animals")[["id","tag_id"]]
-                m = tdf.merge(animals_small, left_on="animal_tag", right_on="tag_id", how="left")
-                m = m.dropna(subset=["id"])
-                rows = []
-                for _,r in m.iterrows():
-                    rows.append((int(r["id"]), r["drug"], float(r["dose_mg_per_kg"]), r["route"],
-                                 str(r["date_administered"]), r["batch_code"], r.get("indication",""),
-                                 int(r.get("duration_days",1)), r.get("prescribed_by",""),
-                                 datetime.utcnow().isoformat()))
-                if rows:
-                    write_many("""INSERT INTO treatments(animal_id,drug,dose_mg_per_kg,route,date_administered,batch_code,
-                                indication,duration_days,prescribed_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)""", rows)
-                    st.success(f"Imported {len(rows)} treatments.")
+                required = {"animal_tag","drug","dose_mg_per_kg","route","date_administered"}
+                missing = required - set(map(str.lower, tdf.columns))
+                if missing:
+                    st.error(f"Missing columns: {', '.join(sorted(missing))}")
                 else:
-                    st.warning("No matching animals found (check tag IDs).")
+                    tdf.columns = [c.lower() for c in tdf.columns]
+                    animals_map = df("SELECT id, tag_id FROM animals")
+                    m = tdf.merge(animals_map, left_on="animal_tag", right_on="tag_id", how="left")
+                    m = m.dropna(subset=["id"])
+                    rows = []
+                    for _,r in m.iterrows():
+                        rows.append((int(r["id"]), r["drug"], float(r["dose_mg_per_kg"]), r["route"],
+                                     str(r["date_administered"]), r.get("batch_code",""), r.get("indication",""),
+                                     int(r.get("duration_days",1)), r.get("prescribed_by",""),
+                                     datetime.utcnow().isoformat()))
+                    if rows:
+                        write_many("""INSERT INTO treatments(animal_id,drug,dose_mg_per_kg,route,date_administered,batch_code,
+                                    indication,duration_days,prescribed_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)""", rows)
+                        st.success(f"Imported {len(rows)} treatments.")
+                    else:
+                        st.warning("No matching animals found (check tag IDs).")
             except Exception as e:
                 st.error(f"Failed: {e}")
 
+    st.caption("Lab CSV columns: animal_tag,drug,matrix,value_mg_per_kg,sample_date")
     l_up = st.file_uploader("Upload labs CSV", type=["csv"], key="l_up")
     if st.button("Import Labs"):
         if l_up is None:
-            st.warning("Please choose a labs CSV.")
+            st.warning("Please upload a labs CSV.")
         else:
             try:
                 ldf = pd.read_csv(l_up)
-                animals_small = df("SELECT * FROM animals")[["id","tag_id"]]
-                m = ldf.merge(animals_small, left_on="animal_tag", right_on="tag_id", how="left")
-                m = m.dropna(subset=["id"])
-                rows=[]
-                for _,r in m.iterrows():
-                    rows.append((int(r["id"]), r["drug"], r["matrix"], float(r["value_mg_per_kg"]), str(r["sample_date"])))
-                if rows:
-                    write_many("""INSERT INTO labs(animal_id,drug,matrix,value_mg_per_kg,sample_date)
-                                  VALUES (?,?,?,?,?)""", rows)
-                    st.success(f"Imported {len(rows)} labs.")
+                required = {"animal_tag","drug","matrix","value_mg_per_kg","sample_date"}
+                missing = required - set(map(str.lower, ldf.columns))
+                if missing:
+                    st.error(f"Missing columns: {', '.join(sorted(missing))}")
                 else:
-                    st.warning("No matching animals found (check tag IDs).")
+                    ldf.columns = [c.lower() for c in ldf.columns]
+                    animals_map = df("SELECT id, tag_id FROM animals")
+                    m = ldf.merge(animals_map, left_on="animal_tag", right_on="tag_id", how="left")
+                    m = m.dropna(subset=["id"])
+                    rows=[]
+                    for _,r in m.iterrows():
+                        rows.append((int(r["id"]), r["drug"], r["matrix"], float(r["value_mg_per_kg"]), str(r["sample_date"])))
+                    if rows:
+                        write_many("""INSERT INTO labs(animal_id,drug,matrix,value_mg_per_kg,sample_date)
+                                      VALUES (?,?,?,?,?)""", rows)
+                        st.success(f"Imported {len(rows)} labs.")
+                    else:
+                        st.warning("No matching animals found (check tag IDs).")
             except Exception as e:
                 st.error(f"Failed: {e}")
 
@@ -681,3 +702,9 @@ with tabs[7]:
         c.close()
         st.download_button("⬇️ Download snapshot", data=str(out).encode("utf-8"),
                            file_name="export.txt", mime="text/plain")
+
+# Footer branding
+st.markdown(
+    "<hr><div style='text-align:center;opacity:0.8'>Built by <b>HEXAMINDS 📈</b> — Offline-first MRL & AMU Compliance</div>",
+    unsafe_allow_html=True
+)
