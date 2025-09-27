@@ -1,7 +1,8 @@
-streamlit
-pandas
-numpy
-matplotlib
-reportlab
-qrcode
-pillow
+streamlit>=1.36.0
+pandas>=2.2.2
+numpy>=1.26.4
+matplotlib>=3.8.4
+reportlab>=4.1.0
+qrcode[pil]>=7.4.2
+Pillow>=10.3.0
+twilio>=9.0.0
